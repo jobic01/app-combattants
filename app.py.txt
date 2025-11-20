@@ -1,0 +1,140 @@
+import streamlit as st
+import pandas as pd
+from streamlit_gsheets import GSheetsConnection
+from datetime import datetime
+
+# --- CONFIGURATION ---
+st.set_page_config(page_title="Les Combattants Légendaires", page_icon="🥊", layout="wide")
+
+# --- CONNEXION GOOGLE SHEETS ---
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# --- CHARGEMENT DES DONNÉES ---
+# On utilise ttl=0 pour ne pas garder de cache trop longtemps (mise à jour immédiate)
+def load_data():
+    df_acc = conn.read(worksheet="ACCUEIL", usecols=list(range(3)), ttl=5)
+    df_uni = conn.read(worksheet="UNIVERS", ttl=5)
+    df_comb = conn.read(worksheet="COMBATTANTS", ttl=5)
+    df_ass = conn.read(worksheet="ASSAUTS", ttl=5)
+    return df_acc, df_uni, df_comb, df_ass
+
+try:
+    df_accueil, df_univers, df_combattants, df_assauts = load_data()
+except Exception as e:
+    st.error("Erreur de connexion au Google Sheet. Vérifiez les 'Secrets'.")
+    st.stop()
+
+# --- BARRE DE NAVIGATION ---
+st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_Homepage.svg/1200px-Google_Homepage.svg.png", width=50) # Remplace par ton logo
+st.sidebar.title("Menu")
+page = st.sidebar.radio("Aller vers :", ["Accueil", "Classement Univers", "Top Combattants", "NOUVEL ASSAUT (Arbitrage)"])
+
+# --- PAGE 1 : ACCUEIL ---
+if page == "Accueil":
+    st.title("🥊 Bienvenue aux Combattants")
+    if not df_accueil.empty:
+        st.markdown(f"### {df_accueil.iloc[0]['TITRE']}")
+        st.info(df_accueil.iloc[0]['DESCRITIPION'])
+    
+    st.divider()
+    st.subheader("🥇 Le Champion Actuel")
+    # On cherche le numéro 1
+    champion = df_combattants.sort_values(by="CLASSEMENT INDIVIDUEL").iloc[0]
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        if "IMAGES" in champion and str(champion["IMAGES"]).startswith("http"):
+            st.image(champion["IMAGES"])
+    with c2:
+        st.markdown(f"## {champion['COMBATTANTS']}")
+        st.caption(f"Incarné par {champion['QUI?']}")
+        st.metric("Puissance Totale", champion['PUISSANCE DU COMBATTANT'])
+
+# --- PAGE 2 : UNIVERS ---
+elif page == "Classement Univers":
+    st.title("🌌 La Guerre des Univers")
+    
+    # On garde les colonnes utiles
+    cols_utiles = ["CHOISI TON UNIVERS ", "PUISSANCE TOTAL DE L'UNIVERS", "NBRE COMBATTANTS CHOISIS"]
+    df_show = df_univers[cols_utiles].sort_values(by="PUISSANCE TOTAL DE L'UNIVERS", ascending=False)
+    
+    st.bar_chart(df_show, x="CHOISI TON UNIVERS ", y="PUISSANCE TOTAL DE L'UNIVERS", color="#FF4B4B")
+    st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+# --- PAGE 3 : COMBATTANTS ---
+elif page == "Top Combattants":
+    st.title("🥷 Liste des Combattants")
+    
+    # Filtre
+    univ_filter = st.selectbox("Filtrer par Univers", ["Tous"] + list(df_combattants["UNIVERS"].unique()))
+    
+    df_show = df_combattants.copy()
+    if univ_filter != "Tous":
+        df_show = df_show[df_show["UNIVERS"] == univ_filter]
+    
+    # Affichage simple
+    st.dataframe(
+        df_show[["CLASSEMENT INDIVIDUEL", "COMBATTANTS", "QUI?", "UNIVERS", "PUISSANCE DU COMBATTANT", "EXPERIENCE AU COMBAT"]].sort_values("CLASSEMENT INDIVIDUEL"),
+        use_container_width=True,
+        hide_index=True
+    )
+
+# --- PAGE 4 : ARBITRAGE (Le Formulaire) ---
+elif page == "NOUVEL ASSAUT (Arbitrage)":
+    st.header("📝 Feuille de Match")
+    st.warning("Attention : L'envoi mettra à jour le fichier Google Sheet directement.")
+    
+    with st.form("assaut_form"):
+        col1, col2 = st.columns(2)
+        
+        list_combattants = df_combattants["COMBATTANTS"].tolist()
+        
+        with col1:
+            st.subheader("Combattant (Bleu)")
+            c1_name = st.selectbox("Nom du Combattant", list_combattants, key="c1")
+            
+            st.markdown("---")
+            st.markdown("**Techniques**")
+            chasses = st.number_input("Chassés", min_value=0, step=1, key="ch1")
+            fouettes = st.number_input("Fouettés", min_value=0, step=1, key="fo1")
+            poings = st.number_input("Directs/Crochets", min_value=0, step=1, key="po1")
+            
+        with col2:
+            st.subheader("Adversaire (Rouge)")
+            # On enlève le combattant 1 de la liste pour éviter qu'il se batte contre lui-même
+            list_adv = [c for c in list_combattants if c != c1_name]
+            c2_name = st.selectbox("Nom de l'Adversaire", list_adv, key="c2")
+            
+            st.markdown("---")
+            st.markdown("**Résultat**")
+            victoire = st.checkbox("Victoire du Combattant (Bleu) ?", key="v1")
+            bonus_fairplay = st.checkbox("Bonus Fairplay / Devoir ?", key="bf1")
+
+        submitted = st.form_submit_button("ENREGISTRER L'ASSAUT")
+        
+        if submitted:
+            # 1. Création de la nouvelle ligne de données
+            # IMPORTANT : Les colonnes doivent correspondre à ton fichier Excel "LES ASSAUTS"
+            
+            new_row = pd.DataFrame([{
+                "UNIVERS": df_combattants[df_combattants["COMBATTANTS"] == c1_name]["UNIVERS"].values[0],
+                "COMBATTANT": c1_name,
+                "ADVERSAIRE": c2_name,
+                "VICTOIRE": victoire,
+                "DEFAITE": not victoire,
+                "CHASSES": chasses,
+                "FOUETTES": fouettes,
+                "DIRECTS": poings,
+                # Ici on met une date ou un numéro d'assaut auto
+                "ASSAUTS": f"Assaut {datetime.now().strftime('%d/%m %H:%M')}", 
+                "TOTAL ASSAUT": 0 # Sera calculé par Google Sheet si tu as mis les formules
+            }])
+            
+            # 2. Ajout au Google Sheet
+            # On concatène l'ancien historique avec la nouvelle ligne
+            updated_df = pd.concat([df_assauts, new_row], ignore_index=True)
+            
+            # 3. Envoi vers le Cloud
+            conn.update(worksheet="ASSAUTS", data=updated_df)
+            
+            st.success(f"Combat enregistré : {c1_name} vs {c2_name} !")
+            st.rerun() # Rafraichit la page pour voir les modifs
